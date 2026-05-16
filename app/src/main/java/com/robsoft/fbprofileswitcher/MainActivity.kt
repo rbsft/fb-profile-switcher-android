@@ -39,6 +39,9 @@ fun ProfileSwitcherScreen() {
     var currentProfile by remember { mutableStateOf("Loading...") }
     var availableProfiles by remember { mutableStateOf<List<String>>(emptyList()) }
     var isBusy by remember { mutableStateOf(false) }
+    var showInitDialog by remember { mutableStateOf(false) }
+    var initName by remember { mutableStateOf("") }
+    
     val scope = rememberCoroutineScope()
 
     fun fetchData() {
@@ -49,12 +52,59 @@ fun ProfileSwitcherScreen() {
             withContext(Dispatchers.Main) {
                 currentProfile = if (current.isEmpty() || current.startsWith("cat:") || current.startsWith("Error")) "None/Unknown" else current
                 availableProfiles = list
+                
+                // Show initialization dialog if no profile is found
+                if (currentProfile == "None/Unknown") {
+                    showInitDialog = true
+                }
             }
         }
     }
 
     LaunchedEffect(Unit) {
         fetchData()
+    }
+
+    if (showInitDialog) {
+        AlertDialog(
+            onDismissRequest = { /* Don't allow dismissal if not initialized */ },
+            title = { Text("Initialize Facebook profiles") },
+            text = {
+                Column {
+                    Text("Enter name for the current profile:")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TextField(
+                        value = initName,
+                        onValueChange = { initName = it },
+                        placeholder = { Text("e.g. Personal") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = initName.isNotBlank(),
+                    onClick = {
+                        showInitDialog = false
+                        isBusy = true
+                        scope.launch(Dispatchers.IO) {
+                            val initCmd = "mkdir -p /data/data/com.facebook.katana && " +
+                                    "echo '$initName' > /data/data/com.facebook.katana/accountid.txt && " +
+                                    "mkdir -p /data/data/profiles/fb/ && " +
+                                    "restorecon -R /data/data/com.facebook.katana"
+                            executeRootCommand(initCmd)
+                            fetchData()
+                            withContext(Dispatchers.Main) {
+                                isBusy = false
+                            }
+                        }
+                    }
+                ) {
+                    Text("Initialize")
+                }
+            }
+        )
     }
 
     Scaffold(
@@ -93,7 +143,7 @@ fun ProfileSwitcherScreen() {
                             .clickable {
                                 if (!isBusy) {
                                     isBusy = true
-                                    val currentId = currentProfile // Capture the ID known to the app
+                                    val currentId = currentProfile
                                     scope.launch(Dispatchers.IO) {
                                         switchFBProfile(profile, currentId)
                                         fetchData()
@@ -118,7 +168,7 @@ fun ProfileSwitcherScreen() {
 }
 
 fun switchFBProfile(targetProfileName: String, currentProfileId: String) {
-    if (currentProfileId == "None/Unknown" || currentProfileId == "Loading..." || currentProfileId.isNotBlank()) {
+    if (currentProfileId == "None/Unknown" || currentProfileId == "Loading..." || currentProfileId.isBlank()) {
         return
     }
 
