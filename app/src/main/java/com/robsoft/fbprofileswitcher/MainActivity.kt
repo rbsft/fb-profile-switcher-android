@@ -1,6 +1,8 @@
 package com.robsoft.fbprofileswitcher
 
 import android.os.Bundle
+import android.os.Environment
+import android.os.StatFs
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -21,6 +23,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -38,23 +41,52 @@ class MainActivity : ComponentActivity() {
 fun ProfileSwitcherScreen() {
     var currentProfile by remember { mutableStateOf("Loading...") }
     var availableProfiles by remember { mutableStateOf<List<String>>(emptyList()) }
+    var storageInfo by remember { mutableStateOf("Calculating...") }
     var isBusy by remember { mutableStateOf(false) }
     var showInitDialog by remember { mutableStateOf(false) }
     var initName by remember { mutableStateOf("") }
     var showCreateDialog by remember { mutableStateOf(false) }
     var createName by remember { mutableStateOf("") }
     
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var profileToDelete by remember { mutableStateOf("") }
+    
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    fun formatSize(size: Long): String {
+        if (size <= 0) return "0 B"
+        val units = arrayOf("B", "KB", "MB", "GB", "TB")
+        val digitGroups = (Math.log10(size.toDouble()) / Math.log10(1024.0)).toInt()
+        return String.format(Locale.US, "%.2f %s", size / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
+    }
+
+    fun getStorageStats(): String {
+        return try {
+            val stat = StatFs(Environment.getDataDirectory().path)
+            val blockSize = stat.blockSizeLong
+            val totalBlocks = stat.blockCountLong
+            val availableBlocks = stat.availableBlocksLong
+            
+            val total = totalBlocks * blockSize
+            val available = availableBlocks * blockSize
+            
+            "Free: ${formatSize(available)} / Total: ${formatSize(total)}"
+        } catch (e: Exception) {
+            "Storage info unavailable"
+        }
+    }
 
     fun fetchData() {
         scope.launch(Dispatchers.IO) {
             val current = executeRootCommand("cat /data/data/com.facebook.katana/accountid.txt").trim()
             val list = executeRootCommand("ls /data/data/profiles/fb/").split("\n").filter { it.isNotBlank() }
+            val storage = getStorageStats()
 
             withContext(Dispatchers.Main) {
                 currentProfile = if (current.isEmpty() || current.startsWith("cat:") || current.startsWith("Error")) "None/Unknown" else current
                 availableProfiles = list
+                storageInfo = storage
                 if (currentProfile == "None/Unknown" && !isBusy) {
                     showInitDialog = true
                 }
@@ -162,6 +194,25 @@ fun ProfileSwitcherScreen() {
         )
     }
 
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Delete Profile") },
+            text = { Text("Are you sure you want to delete profile '$profileToDelete'?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteDialog = false
+                        runAndNotify("rm -rf /data/data/profiles/fb/\"$profileToDelete\"")
+                    }
+                ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -173,6 +224,12 @@ fun ProfileSwitcherScreen() {
                     fontSize = 18.sp,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = storageInfo,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.secondary
                 )
                 HorizontalDivider(modifier = Modifier.padding(top = 12.dp))
             }
@@ -223,7 +280,8 @@ fun ProfileSwitcherScreen() {
                             ) { Text("Switch") }
                             TextButton(
                                 onClick = {
-                                    runAndNotify("rm -rf /data/data/profiles/fb/\"$profile\"")
+                                    profileToDelete = profile
+                                    showDeleteDialog = true
                                 },
                                 enabled = !isBusy,
                                 colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
