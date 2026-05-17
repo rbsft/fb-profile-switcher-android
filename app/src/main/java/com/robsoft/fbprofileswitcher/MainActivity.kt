@@ -1,15 +1,16 @@
 package com.robsoft.fbprofileswitcher
 
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -19,7 +20,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
-import java.io.DataOutputStream
 import java.io.InputStreamReader
 
 class MainActivity : ComponentActivity() {
@@ -41,8 +41,11 @@ fun ProfileSwitcherScreen() {
     var isBusy by remember { mutableStateOf(false) }
     var showInitDialog by remember { mutableStateOf(false) }
     var initName by remember { mutableStateOf("") }
+    var showCreateDialog by remember { mutableStateOf(false) }
+    var createName by remember { mutableStateOf("") }
     
     val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     fun fetchData() {
         scope.launch(Dispatchers.IO) {
@@ -52,9 +55,7 @@ fun ProfileSwitcherScreen() {
             withContext(Dispatchers.Main) {
                 currentProfile = if (current.isEmpty() || current.startsWith("cat:") || current.startsWith("Error")) "None/Unknown" else current
                 availableProfiles = list
-                
-                // Show initialization dialog if no profile is found
-                if (currentProfile == "None/Unknown") {
+                if (currentProfile == "None/Unknown" && !isBusy) {
                     showInitDialog = true
                 }
             }
@@ -65,9 +66,33 @@ fun ProfileSwitcherScreen() {
         fetchData()
     }
 
+    fun runAndNotify(vararg commands: String) {
+        isBusy = true
+        scope.launch(Dispatchers.IO) {
+            val outputs = mutableListOf<String>()
+            for (command in commands) {
+                val output = executeRootCommand(command)
+                if (output.isNotEmpty()) {
+                    outputs.add(output)
+                }
+            }
+            withContext(Dispatchers.Main) {
+                if (outputs.isNotEmpty()) {
+                    val fullOutput = outputs.joinToString("; ")
+                    snackbarHostState.showSnackbar(
+                        message = if (fullOutput.length > 100) fullOutput.take(100) + "..." else fullOutput,
+                        duration = SnackbarDuration.Long
+                    )
+                }
+                fetchData()
+                isBusy = false
+            }
+        }
+    }
+
     if (showInitDialog) {
         AlertDialog(
-            onDismissRequest = { /* Don't allow dismissal if not initialized */ },
+            onDismissRequest = { },
             title = { Text("Initialize Facebook profiles") },
             text = {
                 Column {
@@ -87,28 +112,59 @@ fun ProfileSwitcherScreen() {
                     enabled = initName.isNotBlank(),
                     onClick = {
                         showInitDialog = false
-                        isBusy = true
-                        scope.launch(Dispatchers.IO) {
-                            val initCmd = "mkdir -p /data/data/com.facebook.katana && " +
-                                    "echo '$initName' > /data/data/com.facebook.katana/accountid.txt && " +
-                                    "mkdir -p /data/data/profiles/fb/ && " +
-                                    "restorecon -R /data/data/com.facebook.katana"
-                            executeRootCommand(initCmd)
-                            fetchData()
-                            withContext(Dispatchers.Main) {
-                                isBusy = false
-                            }
-                        }
+                        runAndNotify(
+                            "mkdir -p /data/data/com.facebook.katana",
+                            "echo '$initName' > /data/data/com.facebook.katana/accountid.txt",
+                            "mkdir -p /data/data/profiles/fb/",
+                            "restorecon -R /data/data/com.facebook.katana"
+                        )
                     }
-                ) {
-                    Text("Initialize")
+                ) { Text("Initialize") }
+            }
+        )
+    }
+
+    if (showCreateDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateDialog = false },
+            title = { Text("Create New Profile") },
+            text = {
+                Column {
+                    Text("Enter name for the new profile folder:")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TextField(
+                        value = createName,
+                        onValueChange = { createName = it },
+                        placeholder = { Text("e.g. Work") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
+            },
+            confirmButton = {
+                Button(
+                    enabled = createName.isNotBlank(),
+                    onClick = {
+                        showCreateDialog = false
+                        runAndNotify(
+                            "am force-stop com.facebook.katana",
+                            "mkdir -p /data/data/profiles/fb/\"$createName\"",
+                            "cp -pr /data/data/com.facebook.katana/. /data/data/profiles/fb/\"$createName\"/",
+                            "echo '$createName' > /data/data/profiles/fb/\"$createName\"/accountid.txt"
+                        )
+                        createName = ""
+                    }
+                ) { Text("Create") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreateDialog = false }) { Text("Cancel") }
             }
         )
     }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             Column(modifier = Modifier.padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 8.dp)) {
                 Text(text = "Current profile:", fontWeight = FontWeight.Bold, fontSize = 14.sp)
@@ -119,6 +175,13 @@ fun ProfileSwitcherScreen() {
                     fontWeight = FontWeight.Medium
                 )
                 HorizontalDivider(modifier = Modifier.padding(top = 12.dp))
+            }
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = { showCreateDialog = true }
+            ) {
+                Text("Create Profile")
             }
         }
     ) { innerPadding ->
@@ -137,75 +200,67 @@ fun ProfileSwitcherScreen() {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(availableProfiles) { profile ->
                     Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                            .clickable {
-                                if (!isBusy) {
-                                    isBusy = true
-                                    val currentId = currentProfile
-                                    scope.launch(Dispatchers.IO) {
-                                        switchFBProfile(profile, currentId)
-                                        fetchData()
-                                        withContext(Dispatchers.Main) {
-                                            isBusy = false
-                                        }
-                                    }
-                                }
-                            },
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                     ) {
-                        Text(
-                            text = profile,
-                            modifier = Modifier.padding(16.dp),
-                            fontSize = 16.sp
-                        )
+                        Row(
+                            modifier = Modifier.padding(8.dp).padding(start = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(text = profile, modifier = Modifier.weight(1f), fontSize = 16.sp)
+                            TextButton(
+                                onClick = {
+                                    runAndNotify(
+                                        "am force-stop com.facebook.katana",
+                                        "rm -rf /data/data/profiles/fb/\"$currentProfile\"",
+                                        "mv /data/data/com.facebook.katana /data/data/profiles/fb/\"$currentProfile\"",
+                                        "rm -rf /data/data/com.facebook.katana",
+                                        "mv /data/data/profiles/fb/\"$profile\" /data/data/com.facebook.katana",
+                                        "restorecon -R /data/data/com.facebook.katana"
+                                    )
+                                },
+                                enabled = !isBusy && currentProfile != "None/Unknown"
+                            ) { Text("Switch") }
+                            TextButton(
+                                onClick = {
+                                    runAndNotify("rm -rf /data/data/profiles/fb/\"$profile\"")
+                                },
+                                enabled = !isBusy,
+                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                            ) { Text("Delete") }
+                        }
                     }
                 }
+                item { Spacer(modifier = Modifier.height(80.dp)) }
             }
         }
     }
 }
 
-fun switchFBProfile(targetProfileName: String, currentProfileId: String) {
-    if (currentProfileId == "None/Unknown" || currentProfileId == "Loading..." || currentProfileId.isBlank()) {
-        return
-    }
-
-    val fullCommand = "am force-stop com.facebook.katana && " +
-            "mv /data/data/com.facebook.katana /data/data/profiles/fb/\"$currentProfileId\" && " +
-            "mv /data/data/profiles/fb/\"$targetProfileName\" /data/data/com.facebook.katana && " +
-            "restorecon -R /data/data/com.facebook.katana"
-
-    try {
-        val process = Runtime.getRuntime().exec("su")
-        val os = DataOutputStream(process.outputStream)
-        os.writeBytes("$fullCommand\n")
-        os.writeBytes("exit\n")
-        os.flush()
-        process.waitFor()
-    } catch (e: Exception) {
-        e.printStackTrace()
-    }
-}
-
 fun executeRootCommand(command: String): String {
+    val tag = "FBProfileSwitcher"
     return try {
-        val process = Runtime.getRuntime().exec("su")
-        val os = DataOutputStream(process.outputStream)
-        os.writeBytes("$command\n")
-        os.writeBytes("exit\n")
-        os.flush()
-
-        val reader = BufferedReader(InputStreamReader(process.inputStream))
+        Log.d(tag, "Executing: su -c '$command'")
+        val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
+        
         val output = StringBuilder()
+        val reader = BufferedReader(InputStreamReader(process.inputStream))
+        val errorReader = BufferedReader(InputStreamReader(process.errorStream))
+        
         var line: String?
         while (reader.readLine().also { line = it } != null) {
             output.append(line).append("\n")
         }
+        while (errorReader.readLine().also { line = it } != null) {
+            output.append(line).append("\n")
+        }
+        
         process.waitFor()
-        output.toString()
+        val result = output.toString().trim()
+        if (result.isNotEmpty()) Log.d(tag, "Result: $result")
+        result
     } catch (e: Exception) {
+        Log.e(tag, "Error: ${e.message}")
         "Error: ${e.message}"
     }
 }
