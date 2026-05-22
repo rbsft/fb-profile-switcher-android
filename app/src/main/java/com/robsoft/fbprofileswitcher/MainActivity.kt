@@ -181,7 +181,6 @@ fun ProfileSwitcherScreen() {
                         runAndNotify(
                             "am force-stop com.facebook.katana",
                             "mkdir -p /data/data/profiles/fb/\"$createName\"",
-                            "cp -pr /data/data/com.facebook.katana/. /data/data/profiles/fb/\"$createName\"/",
                             "echo '$createName' > /data/data/profiles/fb/\"$createName\"/accountid.txt"
                         )
                         createName = ""
